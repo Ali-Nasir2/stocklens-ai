@@ -33,3 +33,4 @@ history = model.fit(X, y, epochs=50, batch_size=64, validation_split=0.1, callba
 os.makedirs("models", exist_ok=True)
 model.save("models/stocklens_lstm_gru_final.h5")
 print("[OK] Model trained and saved.")
+

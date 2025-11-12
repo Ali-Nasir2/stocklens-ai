@@ -1,0 +1,56 @@
+============================================================
+STOCKLENS AI - MODEL EVALUATION REPORT
+============================================================
+
+DATA INFORMATION:
+  Training Samples  : 7,864
+  Test Samples      : 1,966
+  Features Used     : 9
+  Lookback Period   : 60 days
+
+------------------------------------------------------------
+TRAINING SET PERFORMANCE:
+------------------------------------------------------------
+  MSE  (Mean Squared Error)     : $3027.00
+  RMSE (Root Mean Squared Error): $55.02
+  MAE  (Mean Absolute Error)    : $44.34
+  R²   (R-squared Score)        : 0.5767
+  MAPE (Mean Absolute % Error)  : 43.16%
+
+------------------------------------------------------------
+TEST SET PERFORMANCE:
+------------------------------------------------------------
+  MSE  (Mean Squared Error)     : $8730.17
+  RMSE (Root Mean Squared Error): $93.44
+  MAE  (Mean Absolute Error)    : $78.33
+  R²   (R-squared Score)        : 0.2351
+  MAPE (Mean Absolute % Error)  : 29.38%
+
+------------------------------------------------------------
+DIRECTIONAL ACCURACY:
+------------------------------------------------------------
+  Directional Accuracy: 77.10%
+  (How often we correctly predicted UP vs DOWN)
+
+============================================================
+INTERPRETATION GUIDE:
+============================================================
+  RMSE:
+    • < $5   : Excellent
+    • < $10  : Good
+    • < $20  : Acceptable
+
+  R² Score:
+    • > 0.90 : Strong predictive power
+    • > 0.70 : Moderate predictive power
+    • < 0.50 : Weak predictive power
+
+  MAPE:
+    • < 5%   : High accuracy
+    • < 10%  : Good accuracy
+    • > 15%  : Poor accuracy
+
+  Directional Accuracy:
+    • > 55%  : Better than random
+    • > 60%  : Good trend prediction
+    • > 70%  : Excellent trend prediction
