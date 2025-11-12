@@ -1,0 +1,6 @@
+.env
+__pycache__/
+data/*
+!data/.gitkeep
+models/*.pkl
+models/*.h5

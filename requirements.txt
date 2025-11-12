@@ -1,0 +1,16 @@
+# Core data handling
+pandas
+numpy
+yfinance
+pandas_ta
+joblib
+
+# ML / Deep Learning
+scikit-learn
+tensorflow==2.17.0  # Or 2.x version supported by your system
+
+# Visualization (optional but useful)
+matplotlib
+
+# Environment and misc
+python-dotenv
