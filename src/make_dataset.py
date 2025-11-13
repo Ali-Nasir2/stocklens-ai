@@ -1,143 +1,174 @@
-import os, glob, json
 import numpy as np
 import pandas as pd
-import yfinance as yf
-import joblib
 from sklearn.preprocessing import MinMaxScaler
+from pathlib import Path
+import json
+import joblib
+
+print("="*60)
+print("STOCKLENS AI - DATASET CREATION (21 Stocks)")
+print("="*60)
 
 # Configuration
-PREFERRED_FEATURES = ["Close", "High", "Low", "Open", "Volume", "RSI", "SMA50", "SMA200", "MACD_12_26_9", "Daily_Return_%"]
-ESSENTIAL_TARGET = "Close"
-LOOKBACK = 60
+LOOKBACK = 60  # 60-day sequences
+PROCESSED_DIR = Path("data/processed")
+INTERIM_DIR = Path("data/interim")
+MODELS_DIR = Path("models")
 
-# -------------------------------------------
-# Fetch company fundamentals (non-time-series)
-# -------------------------------------------
-def get_fundamentals(ticker):
-    try:
-        tk = yf.Ticker(ticker)
-        info = tk.info
-        market_cap = info.get("marketCap", np.nan)
-        dividend_yield = info.get("dividendYield", np.nan)
-        pe_ratio = info.get("trailingPE", np.nan)
-        roe = np.nan
-        try:
-            fin = tk.financials
-            net_income = fin.loc["Net Income"].iloc[0] if "Net Income" in fin.index else np.nan
-            equity = fin.loc["Total Stockholder Equity"].iloc[0] if "Total Stockholder Equity" in fin.index else np.nan
-            if not np.isnan(net_income) and not np.isnan(equity) and equity != 0:
-                roe = (net_income / equity) * 100
-        except Exception:
-            pass
-        return market_cap, dividend_yield, pe_ratio, roe
-    except Exception as e:
-        print(f"[WARN] Fundamentals unavailable for {ticker}: {e}")
-        return np.nan, np.nan, np.nan, np.nan
+# Create directories
+INTERIM_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Features to use for training
+FEATURE_COLS = [
+    'Close', 'High', 'Low', 'Open',  # Price features
+    'RSI', 'SMA_20', 'SMA_50',       # Momentum & Trend
+    'MACD', 'MACD_Signal',           # MACD indicators
+    'Returns'                         # Returns
+]
 
-# -------------------------------------------
-# Build technical + fundamental feature set
-# -------------------------------------------
-def build_features(path, outdir="data/processed"):
-    ticker = os.path.basename(path).replace("_ind.csv", "").replace(".csv", "")
+print(f"\n[1/5] Loading processed stock data...")
+print(f"   Features to use: {len(FEATURE_COLS)}")
 
-    # ---- Simply read the CSV normally (it already has proper headers) ----
-    df = pd.read_csv(path)
+# Load all processed stocks
+all_data = []
+stock_names = []
+
+processed_files = sorted(PROCESSED_DIR.glob("*_features.csv"))
+
+if not processed_files:
+    raise FileNotFoundError("No processed files found! Run: python -m src.build_features")
+
+print(f"   Found {len(processed_files)} stock files")
+
+for file_path in processed_files:
+    ticker = file_path.stem.replace("_features", "")
+    stock_names.append(ticker)
     
-    # Convert Date to datetime and set as index
-    df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
-    df = df[df["Date"].notna()]  # Drop rows with invalid dates
-    df.set_index("Date", inplace=True)
+    df = pd.read_csv(file_path, index_col=0, parse_dates=True)
     
-    # Keep only columns that exist in PREFERRED_FEATURES
-    cols = [c for c in PREFERRED_FEATURES if c in df.columns]
+    # Check if all features exist
+    missing_cols = [col for col in FEATURE_COLS if col not in df.columns]
+    if missing_cols:
+        print(f"   ⚠ {ticker}: Missing columns {missing_cols}, skipping...")
+        continue
     
-    # Make sure target exists
-    if ESSENTIAL_TARGET not in cols:
-        raise ValueError(f"[ERR] '{ESSENTIAL_TARGET}' not found in {path}. Available: {df.columns.tolist()}")
+    # Select only required features
+    df_features = df[FEATURE_COLS].copy()
     
-    df = df[cols]
+    # Drop any remaining NaN
+    df_features = df_features.dropna()
     
-    # Drop rows where essential price columns are NaN
-    essential_price_cols = [c for c in ["Close", "High", "Low", "Open"] if c in df.columns]
-    if essential_price_cols:
-        df = df.dropna(subset=essential_price_cols, how='any')
+    all_data.append(df_features.values)
+    print(f"   ✓ {ticker}: {len(df_features)} rows")
+
+print(f"\n   ✓ Loaded {len(all_data)} stocks successfully")
+
+# Combine all stocks
+combined_data = np.vstack(all_data)
+print(f"   ✓ Combined shape: {combined_data.shape}")
+
+# [2/5] Normalize data
+print(f"\n[2/5] Normalizing data...")
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(combined_data)
+print(f"   ✓ Data scaled to [0, 1]")
+
+# Save scaler
+scaler_path = MODELS_DIR / "scaler.pkl"
+joblib.dump(scaler, scaler_path)
+print(f"   ✓ Scaler saved: {scaler_path}")
+
+# [3/5] Create sequences
+print(f"\n[3/5] Creating {LOOKBACK}-day sequences...")
+
+X = []
+y = []
+
+# Create sequences for each stock separately to avoid mixing stocks
+current_idx = 0
+for stock_idx, stock_data in enumerate(all_data):
+    stock_scaled = scaler.transform(stock_data)
     
-    # Forward-fill and backward-fill technical indicators with NaN warmup periods
-    df = df.fillna(method='ffill').fillna(method='bfill')
+    for i in range(LOOKBACK, len(stock_scaled)):
+        X.append(stock_scaled[i-LOOKBACK:i, :])  # 60 days of features
+        y.append(stock_scaled[i, 0])  # Next day's Close price (index 0)
     
-    # Final check: drop any remaining rows with NaN
-    df = df.dropna()
-    
-    # Sort by date
-    df = df.sort_index()
-    
-    # Add a Ticker column for debugging
-    df["Ticker"] = ticker
-    
-    return df
+    print(f"   ✓ {stock_names[stock_idx]}: Created {len(stock_scaled) - LOOKBACK} sequences")
 
+X = np.array(X)
+y = np.array(y)
 
-def load_all(folder="data/processed"):
-    files = glob.glob(os.path.join(folder, "*_ind.csv"))
-    if not files:
-        raise FileNotFoundError(f"[ERR] No processed files found in {folder}. Run build_features first.")
-    dfs = []
-    for f in files:
-        try:
-            df = build_features(f)
-            dfs.append(df)
-            print(f"[load] {os.path.basename(f)} rows={len(df)}")
-        except Exception as e:
-            print(f"[skip] {os.path.basename(f)}: {e}")
-    if not dfs:
-        raise RuntimeError("[ERR] No valid processed files after filtering.")
-    # Vertically stack all tickers (same schema)
-    merged = pd.concat(dfs, axis=0, copy=False).sort_index()
-    return merged
+print(f"\n   ✓ Final dataset:")
+print(f"      X shape: {X.shape} (samples, timesteps, features)")
+print(f"      y shape: {y.shape}")
 
+# [4/5] Check balance
+print(f"\n[4/5] Checking data balance...")
+price_changes = np.diff(y)
+up_moves = np.sum(price_changes > 0)
+down_moves = np.sum(price_changes < 0)
+neutral = np.sum(price_changes == 0)
 
-def make_windows(arr, target_idx, lookback=60):
-    X, y = [], []
-    for i in range(lookback, len(arr)):
-        X.append(arr[i-lookback:i, :])      # window of features
-        y.append(arr[i, target_idx])        # next-step target (Close)
-    return np.array(X), np.array(y)
+total = len(price_changes)
+up_pct = (up_moves / total) * 100
+down_pct = (down_moves / total) * 100
 
+print(f"   UP movements:    {up_moves:,} ({up_pct:.1f}%)")
+print(f"   DOWN movements:  {down_moves:,} ({down_pct:.1f}%)")
+print(f"   Neutral:         {neutral:,} ({(neutral/total)*100:.1f}%)")
 
-def main():
-    os.makedirs("data/interim", exist_ok=True)
-    os.makedirs("models", exist_ok=True)
+if abs(up_pct - down_pct) < 10:
+    print(f"   ✓ Good balance! (difference: {abs(up_pct - down_pct):.1f}%)")
+else:
+    print(f"   ⚠ Imbalance detected: {abs(up_pct - down_pct):.1f}% difference")
 
-    df = load_all("data/processed")
-    print(f"[dataset] Total rows loaded: {len(df)}")
+# [5/5] Save dataset
+print(f"\n[5/5] Saving dataset...")
 
-    # Final feature list (without the non-numeric 'Ticker')
-    feat_cols = [c for c in df.columns if c != "Ticker"]
-    # Ensure target is present
-    if ESSENTIAL_TARGET not in feat_cols:
-        raise ValueError(f"[ERR] Target '{ESSENTIAL_TARGET}' missing from final features {feat_cols}")
+X_path = INTERIM_DIR / "X.npy"
+y_path = INTERIM_DIR / "y.npy"
 
-    # Scale all features column-wise
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(df[feat_cols].values)
-    # Index of target within the scaled array
-    target_idx = feat_cols.index(ESSENTIAL_TARGET)
+np.save(X_path, X)
+np.save(y_path, y)
 
-    # Build windows
-    X, y = make_windows(scaled, target_idx, lookback=LOOKBACK)
+print(f"   ✓ X saved: {X_path}")
+print(f"   ✓ y saved: {y_path}")
 
-    # Save artifacts
-    np.save("data/interim/X.npy", X)
-    np.save("data/interim/y.npy", y)
-    joblib.dump(scaler, "models/scaler.pkl")
-    with open("models/feature_list.json", "w") as f:
-        json.dump(feat_cols, f)
+# Save feature list
+feature_list_path = MODELS_DIR / "feature_list.json"
+with open(feature_list_path, "w") as f:
+    json.dump(FEATURE_COLS, f, indent=2)
+print(f"   ✓ Feature list saved: {feature_list_path}")
 
-    print(f"[dataset] features={len(feat_cols)} target='{ESSENTIAL_TARGET}' lookback={LOOKBACK}")
-    print(f"[dataset] X.shape={X.shape}  y.shape={y.shape}")
-    print("[OK] Saved: data/interim/X.npy, data/interim/y.npy, models/scaler.pkl, models/feature_list.json")
+# Save metadata
+metadata = {
+    "lookback": LOOKBACK,
+    "num_stocks": len(stock_names),
+    "stock_names": stock_names,
+    "total_samples": int(len(X)),
+    "features": FEATURE_COLS,
+    "num_features": len(FEATURE_COLS),
+    "up_pct": float(up_pct),
+    "down_pct": float(down_pct),
+}
 
+metadata_path = INTERIM_DIR / "dataset_metadata.json"
+with open(metadata_path, "w") as f:
+    json.dump(metadata, f, indent=2)
+print(f"   ✓ Metadata saved: {metadata_path}")
 
-if __name__ == "__main__":
-    main()
+print("\n" + "="*60)
+print("DATASET CREATION COMPLETE!")
+print("="*60)
+print(f"\n📊 Dataset Statistics:")
+print(f"   Stocks:          {len(stock_names)}")
+print(f"   Total samples:   {len(X):,}")
+print(f"   Lookback:        {LOOKBACK} days")
+print(f"   Features:        {len(FEATURE_COLS)}")
+print(f"   Balance:         {up_pct:.1f}% UP / {down_pct:.1f}% DOWN")
+
+print("\n" + "="*60)
+print("✅ Ready for training!")
+print("="*60)
+print("\n📊 Next step: python -m src.train_model")

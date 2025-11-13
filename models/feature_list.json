@@ -1,1 +1,12 @@
-["Close", "High", "Low", "Open", "RSI", "SMA50", "SMA200", "MACD_12_26_9", "Daily_Return_%"]
+[
+  "Close",
+  "High",
+  "Low",
+  "Open",
+  "RSI",
+  "SMA_20",
+  "SMA_50",
+  "MACD",
+  "MACD_Signal",
+  "Returns"
+]

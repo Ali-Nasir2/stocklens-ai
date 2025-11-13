@@ -1,0 +1,30 @@
+{
+  "price_features": [
+    "Close",
+    "High",
+    "Low",
+    "Open"
+  ],
+  "indicator_features": [
+    "RSI",
+    "SMA_20",
+    "SMA_50",
+    "MACD",
+    "MACD_Signal",
+    "Returns"
+  ],
+  "price_indices": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "indicator_indices": [
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ]
+}

@@ -1,6 +1,52 @@
-.env
+# Python
 __pycache__/
-data/*
-!data/.gitkeep
-models/*.pkl
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+ENV/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# LARGE FILES - DO NOT PUSH TO GITHUB
+# ==========================================
+
+# Model files (9-18 MB each)
+models/*.keras
 models/*.h5
+
+# Pickle files (can be large)
+models/scaler.pkl
+
+# Keep small JSON files
+!models/*.json
+
+# Data files (100-300 MB each)
+data/raw/*
+data/processed/*
+data/interim/*.npy
+
+# Allow .gitkeep files
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/interim/.gitkeep
+
+# Environment
+.env
+
+# Logs
+logs/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/

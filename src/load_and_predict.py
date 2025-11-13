@@ -9,26 +9,28 @@ import tensorflow as tf
 # Configuration
 LOOKBACK = 60
 
-# -----------------------------
-# Load trained model and scaler
-# -----------------------------
-print("[INIT] Loading model and scaler...")
-MODEL = tf.keras.models.load_model("models/stocklens_lstm_gru_best.h5", compile=False)
+# Load trained hybrid model and scaler
+print("[INIT] Loading hybrid model and scaler...")
+MODEL = tf.keras.models.load_model("models/stocklens_hybrid_best.keras", compile=False)
 SCALER = joblib.load("models/scaler.pkl")
 
-# Load feature list to ensure correct order
+# Load feature list and split info
 with open("models/feature_list.json", "r") as f:
     FEATURE_LIST = json.load(f)
 
-print(f"[INIT] Model ready. Expected features: {FEATURE_LIST}")
+with open("models/feature_split.json", "r") as f:
+    FEATURE_SPLIT = json.load(f)
 
-# -----------------------------
-# Helper: add technical indicators (MATCHING TRAINING DATA)
-# -----------------------------
+price_indices = FEATURE_SPLIT['price_indices']
+indicator_indices = FEATURE_SPLIT['indicator_indices']
+
+print(f"[INIT] Hybrid model ready.")
+print(f"  Price features: {FEATURE_SPLIT['price_features']}")
+print(f"  Indicator features: {FEATURE_SPLIT['indicator_features']}")
+
+# Helper: add technical indicators
 def _add_indicators(df):
     """Add technical indicators exactly as in training"""
-    # Basic price features already exist: Close, High, Low, Open, Volume
-    
     # RSI (14-period)
     df["RSI"] = ta.rsi(df["Close"], length=14)
     
@@ -44,35 +46,33 @@ def _add_indicators(df):
     # Daily Return %
     df["Daily_Return_%"] = df["Close"].pct_change() * 100
     
-    # Drop NaN rows created by indicators
+    # Drop NaN rows
     df.dropna(inplace=True)
     
     return df
 
 
-# -----------------------------
 # Predict next-day closing price
-# -----------------------------
 def predict_next(symbol):
     print(f"\n{'='*60}")
     print(f"PREDICTION FOR {symbol}")
     print(f"{'='*60}")
     print(f"[INFO] Fetching latest data for {symbol}...")
     
-    # Download 2 years to ensure enough data for SMA200
+    # Download 2 years of data
     df = yf.download(symbol, period="2y", interval="1d", progress=False)
     if df.empty:
         print(f"[ERROR] No data found for {symbol}.")
         return None
 
-    # Reset index to make Date a column
+    # Reset index
     df.reset_index(inplace=True)
     
     # Flatten multi-level columns if they exist
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = ['_'.join(col).strip() if col[1] else col[0] for col in df.columns.values]
     
-    # Rename columns to match expected format
+    # Rename columns
     column_mapping = {
         'Close': 'Close',
         f'Close_{symbol}': 'Close',
@@ -90,47 +90,51 @@ def predict_next(symbol):
         if old_name in df.columns:
             df.rename(columns={old_name: new_name}, inplace=True)
     
-    # Store current price before processing
+    # Store current price
     current_price = df["Close"].iloc[-1]
     
     # Add indicators
     df = _add_indicators(df)
     
-    # Ensure all required features exist
+    # Check for missing features
     missing_features = [f for f in FEATURE_LIST if f not in df.columns]
     if missing_features:
         print(f"[ERROR] Missing features: {missing_features}")
         print(f"[ERROR] Available columns: {df.columns.tolist()}")
         return None
     
-    # Select only the features used in training (in correct order)
+    # Select features in correct order
     df = df[FEATURE_LIST]
     
-    # Check we have enough data for lookback window
+    # Check we have enough data
     if len(df) < LOOKBACK:
         print(f"[ERROR] Not enough data. Need {LOOKBACK} rows, got {len(df)}")
         return None
 
     print(f"[INFO] Using {len(df)} rows of historical data")
     
-    # Scale features using the same scaler from training
+    # Scale features
     arr = SCALER.transform(df)
     
     # Take last LOOKBACK timesteps
-    X = arr[-LOOKBACK:].reshape(1, LOOKBACK, arr.shape[1])
+    X = arr[-LOOKBACK:]
+    
+    # Split into price and indicator streams
+    X_price = X[:, price_indices].reshape(1, LOOKBACK, len(price_indices))
+    X_indicators = X[:, indicator_indices].reshape(1, LOOKBACK, len(indicator_indices))
 
-    # Predict normalized value
-    pred_norm = MODEL.predict(X, verbose=0)[0][0]
+    # Predict with both inputs (hybrid model)
+    pred_norm = MODEL.predict([X_price, X_indicators], verbose=0)[0][0]
 
-    # Denormalize (convert to USD)
+    # Denormalize
     close_index = FEATURE_LIST.index("Close")
     close_min = SCALER.data_min_[close_index]
     close_max = SCALER.data_max_[close_index]
     pred_price = pred_norm * (close_max - close_min) + close_min
 
     # Show comparison
-    print(f"\n[RESULT] {symbol} - Next Day Prediction")
-    print(f"─"*60)
+    print(f"\n[RESULT] {symbol} - Next Day Prediction (Hybrid Model)")
+    print(f"-"*60)
     print(f" Current Close Price  : ${current_price:.2f}")
     print(f" Predicted Next Close : ${pred_price:.2f}")
     print(f" Normalized Output    : {pred_norm:.4f}")
@@ -154,15 +158,13 @@ def predict_next(symbol):
     }
 
 
-# -----------------------------
-# Run direct test
-# -----------------------------
+# Run predictions
 if __name__ == "__main__":
     # Test on all training stocks
     stocks = ["AAPL", "AMZN", "GOOGL", "MSFT", "TSLA"]
     
     print("\n" + "="*60)
-    print("STOCKLENS AI - LIVE PREDICTIONS")
+    print("STOCKLENS AI - LIVE PREDICTIONS (HYBRID MODEL)")
     print("="*60)
     
     results = []
@@ -177,7 +179,7 @@ if __name__ == "__main__":
         print("SUMMARY")
         print("="*60)
         print(f"{'Stock':<10} {'Current':<12} {'Predicted':<12} {'Change':<15} {'Direction'}")
-        print("─"*60)
+        print("-"*60)
         for r in results:
             print(f"{r['symbol']:<10} ${r['current_price']:<11.2f} ${r['predicted_price']:<11.2f} {r['pct_change']:>6.2f}%{' '*7} {r['direction']}")
         print("="*60)

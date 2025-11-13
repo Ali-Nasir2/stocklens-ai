@@ -1,125 +1,147 @@
-import os, pandas as pd, pandas_ta as ta, glob, yfinance as yf
+# src/build_features.py
+
+import pandas as pd
 import numpy as np
+from pathlib import Path
+from ta.trend import MACD, EMAIndicator, SMAIndicator
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
+import warnings
+warnings.filterwarnings('ignore')
 
-# -------------------------------------------
-# Fetch company fundamentals (non-time-series)
-# -------------------------------------------
-def get_fundamentals(ticker):
+def load_stock_data(ticker):
+    """Load raw stock data with proper CSV structure handling"""
+    raw_path = Path('data/raw') / f'{ticker}.csv'
+    
+    # Read CSV skipping the first 2 rows (headers and ticker row)
+    df = pd.read_csv(
+        raw_path,
+        skiprows=2,  # Skip "Price,Close,High..." and "Ticker,KO,KO..."
+        parse_dates=[0],  # First column is date
+        index_col=0
+    )
+    
+    # Rename columns properly
+    df.columns = ['Close', 'High', 'Low', 'Open', 'Volume']
+    
+    # Convert to numeric (in case there are string values)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Drop any rows with NaN values
+    df = df.dropna()
+    
+    # Sort by date ascending
+    df = df.sort_index()
+    
+    return df
+
+def add_technical_indicators(df):
+    """Add technical indicators to the dataframe"""
+    # Make a copy to avoid SettingWithCopyWarning
+    df = df.copy()
+    
+    # Price-based features
+    df['Returns'] = df['Close'].pct_change()
+    df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
+    
+    # Moving Averages
+    df['SMA_20'] = SMAIndicator(close=df['Close'], window=20).sma_indicator()
+    df['SMA_50'] = SMAIndicator(close=df['Close'], window=50).sma_indicator()
+    df['EMA_12'] = EMAIndicator(close=df['Close'], window=12).ema_indicator()
+    df['EMA_26'] = EMAIndicator(close=df['Close'], window=26).ema_indicator()
+    
+    # MACD
+    macd = MACD(close=df['Close'])
+    df['MACD'] = macd.macd()
+    df['MACD_Signal'] = macd.macd_signal()
+    df['MACD_Diff'] = macd.macd_diff()
+    
+    # RSI
+    df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
+    
+    # Bollinger Bands
+    bollinger = BollingerBands(close=df['Close'], window=20, window_dev=2)
+    df['BB_High'] = bollinger.bollinger_hband()
+    df['BB_Low'] = bollinger.bollinger_lband()
+    df['BB_Mid'] = bollinger.bollinger_mavg()
+    df['BB_Width'] = (df['BB_High'] - df['BB_Low']) / df['BB_Mid']
+    
+    # Volatility
+    df['Volatility'] = df['Returns'].rolling(window=20).std()
+    
+    # Volume indicators
+    df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
+    df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+    
+    # Price position indicators
+    df['High_Low_Ratio'] = df['High'] / df['Low']
+    df['Close_Open_Ratio'] = df['Close'] / df['Open']
+    
+    return df
+
+def create_target_variable(df, horizon=5):
+    """Create target variable for prediction"""
+    df = df.copy()
+    df['Target'] = (df['Close'].shift(-horizon) > df['Close']).astype(int)
+    return df
+
+def process_stock(ticker):
+    """Process a single stock: load data, add features, save"""
     try:
-        tk = yf.Ticker(ticker)
-        info = tk.info
-        market_cap = info.get("marketCap", np.nan)
-        dividend_yield = info.get("dividendYield", np.nan)
-        pe_ratio = info.get("trailingPE", np.nan)
-        roe = np.nan
-        try:
-            fin = tk.financials
-            net_income = fin.loc["Net Income"].iloc[0] if "Net Income" in fin.index else np.nan
-            equity = fin.loc["Total Stockholder Equity"].iloc[0] if "Total Stockholder Equity" in fin.index else np.nan
-            if not np.isnan(net_income) and not np.isnan(equity) and equity != 0:
-                roe = (net_income / equity) * 100
-        except Exception:
-            pass
-        return market_cap, dividend_yield, pe_ratio, roe
+        # Load data
+        df = load_stock_data(ticker)
+        
+        # Add technical indicators
+        df = add_technical_indicators(df)
+        
+        # Create target variable (predict 5 days ahead)
+        df = create_target_variable(df, horizon=5)
+        
+        # Drop rows with NaN (from indicator calculations)
+        df = df.dropna()
+        
+        # Save processed data
+        processed_path = Path('data/processed') / f'{ticker}_features.csv'
+        processed_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(processed_path)
+        
+        return True, f"✓ Processed {len(df)} rows"
+        
     except Exception as e:
-        print(f"[WARN] Fundamentals unavailable for {ticker}: {e}")
-        return np.nan, np.nan, np.nan, np.nan
+        return False, f"❌ Error: {str(e)}"
 
-
-# -------------------------------------------
-# Build technical + fundamental feature set
-# -------------------------------------------
-def build_features(path, outdir="data/processed"):
-    ticker = os.path.basename(path).replace(".csv", "")
-
-    # ---- Read and normalize CSV with messy top metadata ----
-    raw = pd.read_csv(path, header=None, dtype=str)
-
-    # First row contains the column names (but missing "Date")
-    header_row = raw.iloc[0].tolist()  # e.g. ['Price','Close','High','Low','Open','Volume']
+def main():
+    """Main function to process all stocks"""
+    print("=" * 60)
+    print("STOCKLENS AI - FEATURE BUILDER")
+    print("=" * 60)
     
-    # Drop metadata rows (ticker row and "Date" row)
-    rows_to_drop = []
-    if len(raw) > 1 and str(raw.iloc[1, 0]).strip().lower().startswith("ticker"):
-        rows_to_drop.append(1)
-    if len(raw) > 2 and str(raw.iloc[2, 0]).strip().lower() == "date":
-        rows_to_drop.append(2)
+    # List of stock tickers
+    tickers = [
+        'AAPL', 'AMZN', 'BA', 'BAC', 'COST', 'CVX', 'DIS', 'GOOGL',
+        'JNJ', 'JPM', 'KO', 'META', 'MSFT', 'NKE', 'NVDA', 'PFE',
+        'TSLA', 'UNH', 'V', 'WMT', 'XOM'
+    ]
     
-    if rows_to_drop:
-        raw = raw.drop(index=rows_to_drop).reset_index(drop=True)
-
-    # Build final columns: prepend "Date" to the header row.
-    cols = ["Date"] + [c for c in header_row if str(c) and str(c).strip() != ""]
+    print(f"\nProcessing {len(tickers)} stocks...\n")
     
-    # Slice data rows (everything after the original header row)
-    data_start_index = 1  # everything after the first row (which was header_row)
-    df = raw.iloc[data_start_index:].copy()
-    df.columns = cols[: df.shape[1]]  # align column count with actual data columns
-
-    # Convert types
-    df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
-    # Convert other columns to numeric (coerce errors to NaN)
-    for c in df.columns:
-        if c != "Date":
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Drop rows where Date couldn't be parsed
-    df = df[df["Date"].notna()]
+    results = {}
+    for i, ticker in enumerate(tickers, 1):
+        print(f"[{i}/{len(tickers)}] {ticker}")
+        success, message = process_stock(ticker)
+        results[ticker] = (success, message)
+        print(f"  {message}")
     
-    df.set_index("Date", inplace=True)
+    # Summary
+    print("\n" + "=" * 60)
+    successful = sum(1 for s, _ in results.values() if s)
+    print(f"✓ Successful: {successful}/{len(tickers)}")
+    print(f"❌ Failed: {len(tickers) - successful}")
+    print("=" * 60)
     
-    # Debug: print actual columns
-    print(f"[DEBUG] {ticker} columns: {df.columns.tolist()}")
-    
-    # Verify Close column exists
-    if "Close" not in df.columns:
-        raise ValueError(f"'Close' column not found after parsing {path}. Columns: {df.columns.tolist()}")
+    if successful > 0:
+        print("\n📊 Next step: python -m src.make_dataset")
 
-    # ---- Technical Indicators ----
-    df["RSI"] = ta.rsi(df["Close"], 14)
-    df["SMA50"] = ta.sma(df["Close"], 50)
-    df["SMA200"] = ta.sma(df["Close"], 200)
-    macd = ta.macd(df["Close"])
-    df = pd.concat([df, macd], axis=1)
-
-    # ---- Daily Gain/Loss ----
-    df["Daily_Return_%"] = df["Close"].pct_change() * 100
-    df["Gain_Loss"] = np.where(df["Daily_Return_%"] >= 0, "Gain", "Loss")
-
-    # ---- Upside / Downside ----
-    window = 14
-    df["Upside_Potential_%"] = df["Daily_Return_%"].rolling(window).apply(
-        lambda x: x[x > 0].mean() if len(x[x > 0]) > 0 else np.nan, raw=True
-    )
-    df["Downside_Risk_%"] = df["Daily_Return_%"].rolling(window).apply(
-        lambda x: x[x < 0].mean() if len(x[x < 0]) > 0 else np.nan, raw=True
-    )
-
-    # ---- Fundamentals ----
-    market_cap, dividend_yield, pe_ratio, roe = get_fundamentals(ticker)
-    df["Market_Cap"] = market_cap
-    df["Dividend_Yield"] = dividend_yield
-    df["PE_Ratio"] = pe_ratio
-    df["ROE"] = roe
-
-    # ---- Final cleanup ----
-    # Only drop rows where essential price columns are NaN
-    # Check which columns actually exist before trying to drop NaNs
-    essential_cols = [c for c in ["Price", "Close", "High", "Low", "Open", "Volume"] if c in df.columns]
-    if essential_cols:
-        df.dropna(subset=essential_cols, inplace=True)
-    
-    os.makedirs(outdir, exist_ok=True)
-    outpath = os.path.join(outdir, f"{ticker}_ind.csv")
-    df.to_csv(outpath)
-
-    print(f"[OK] Full features built for {ticker} → saved to {outpath} ({len(df)} rows)")
-    return outpath
-
-
-# -------------------------------------------
-# Run the feature builder for all raw files
-# -------------------------------------------
-if __name__ == "__main__":
-    for f in glob.glob("data/raw/*.csv"):
-        build_features(f)
+if __name__ == '__main__':
+    main()
